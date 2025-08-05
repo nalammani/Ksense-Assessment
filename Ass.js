@@ -1,4 +1,5 @@
 const fetch = require('node-fetch');
+
 const API_KEY = 'ak_12dd97ceceec3200c2b5b661c92dd559d9b0b78cb8fa0b7e';
 const BASE_URL = 'https://assessment.ksensetech.com/api';
 
@@ -6,14 +7,7 @@ async function fetchWithRetry(url, options = {}, retries = 5, backoff = 500) {
   for (let i = 0; i < retries; i++) {
     try {
       const res = await fetch(url, options);
-      if (res.status === 429) {
-        // Rate limit hit, wait and retry
-        console.warn('Rate limited, retrying...');
-        await new Promise(r => setTimeout(r, backoff));
-        backoff *= 2;
-        continue;
-      }
-      if (res.status === 500 || res.status === 503) {
+      if (res.status === 429 || res.status === 500 || res.status === 503) {
         console.warn(`Server error (${res.status}), retrying...`);
         await new Promise(r => setTimeout(r, backoff));
         backoff *= 2;
@@ -45,11 +39,10 @@ function getBPRisk(bp) {
   const parsed = parseBP(bp);
   if (!parsed) return 0;
   const { sys, dia } = parsed;
-  // Use higher risk category if different
-  if (sys >= 140 || dia >= 90) return 4;      // Stage 2
-  if ((sys >= 130 && sys <= 139) || (dia >= 80 && dia <= 89)) return 3; // Stage 1
-  if (sys >= 120 && sys <= 129 && dia < 80) return 2; // Elevated
-  if (sys < 120 && dia < 80) return 1;        // Normal
+  if (sys >= 140 || dia >= 90) return 4;
+  if ((sys >= 130 && sys <= 139) || (dia >= 80 && dia <= 89)) return 3;
+  if (sys >= 120 && sys <= 129 && dia < 80) return 2;
+  if (sys < 120 && dia < 80) return 1;
   return 0;
 }
 
@@ -72,15 +65,9 @@ function getAgeRisk(age) {
 }
 
 function hasDataQualityIssues(patient) {
-  // Missing or invalid BP
   if (!patient.blood_pressure || !parseBP(patient.blood_pressure)) return true;
-
-  // Missing or invalid age
-  if (patient.age === undefined || patient.age === null || isNaN(Number(patient.age))) return true;
-
-  // Missing or invalid temperature
-  if (patient.temperature === undefined || patient.temperature === null || isNaN(Number(patient.temperature))) return true;
-
+  if (patient.age === undefined || isNaN(Number(patient.age))) return true;
+  if (patient.temperature === undefined || isNaN(Number(patient.temperature))) return true;
   return false;
 }
 
@@ -112,7 +99,6 @@ async function main() {
       const bpScore = getBPRisk(patient.blood_pressure);
       const tempScore = getTempRisk(patient.temperature);
       const ageScore = getAgeRisk(patient.age);
-
       const totalRisk = bpScore + tempScore + ageScore;
 
       if (totalRisk >= 4) highRiskPatients.push(patient.patient_id);
@@ -123,12 +109,20 @@ async function main() {
     page++;
   }
 
-  console.log('--- Alert Lists ---');
+  console.log('\n--- Alert Lists ---');
   console.log('High-Risk Patients:', highRiskPatients);
   console.log('Fever Patients:', feverPatients);
   console.log('Data Quality Issues:', dataQualityIssues);
 
-  // Submit results
+  // Use simple arrays of strings as payload to avoid 400 error
+  const payload = {
+    high_risk_patients: highRiskPatients,
+    fever_patients: feverPatients,
+    data_quality_issues: dataQualityIssues
+  };
+
+  console.log('\nSubmitting payload:\n', JSON.stringify(payload, null, 2));
+
   const submitUrl = `${BASE_URL}/submit-assessment`;
   const submitResponse = await fetchWithRetry(submitUrl, {
     method: 'POST',
@@ -136,22 +130,21 @@ async function main() {
       'x-api-key': API_KEY,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      high_risk_patients: highRiskPatients,
-      fever_patients: feverPatients,
-      data_quality_issues: dataQualityIssues
-    })
+    body: JSON.stringify(payload)
   });
 
-  console.log('Submission result:', submitResponse);
+  console.log('\n--- Submission Result ---');
+  console.log(JSON.stringify(submitResponse, null, 2));
+
   if (submitResponse.feedback) {
-    console.log('Feedback:', JSON.stringify(submitResponse.feedback, null, 2));
+    console.log('\nFeedback:', JSON.stringify(submitResponse.feedback, null, 2));
   }
+
   if (submitResponse.results?.breakdown) {
-    console.log('Breakdown:', JSON.stringify(submitResponse.results.breakdown, null, 2));
+    console.log('\nBreakdown:', JSON.stringify(submitResponse.results.breakdown, null, 2));
   }
 }
 
 main().catch(err => {
-  console.error('Error:', err);
+  console.error('\nFatal Error:', err.message);
 });
